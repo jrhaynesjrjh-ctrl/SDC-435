@@ -1,339 +1,465 @@
-# ==========================================================
-# Jonathan Haynes
-# Assignment 4 - MongoDB CRUD Application
-# November 18, 2026
-#
+# Name: John Haynes
+# Assignment: Python Application Accessing a Column Family Database
+# Date: 11/25/2026
 # Purpose:
-# This program performs CRUD operations using
-# the Amazon ReviewData MongoDB collection.
-# ==========================================================
+# Create a menu-driven Cassandra application that imports
+# Amazon review data from a JSON file and performs CRUD
+# operations on a Cassandra column family database.
 
+from cassandra.cluster import Cluster
+from cassandra.auth import PlainTextAuthProvider
+import json
+import os
 
-from pymongo import MongoClient
+# --------------------------------------------------
+# Connect to Cassandra
+# --------------------------------------------------
 
-# Connect to MongoDB
-client = MongoClient("mongodb://localhost:27017/")
+auth = PlainTextAuthProvider(
+    username="cassUser",
+    password="cassPass"
+)
 
-# Connect to Amazon database
-db = client["Amazon"]
+cluster = Cluster(
+    ["localhost"],
+    port=9042,
+    auth_provider=auth
+)
 
-# Connect to ReviewData collection
-collection = db["ReviewData"]
+session = cluster.connect()
 
+# --------------------------------------------------
+# Create Amazon Keyspace
+# --------------------------------------------------
 
-# ==========================================================
-# Create a new review document
-# ==========================================================
-def create_review():
-    print("\n--- Create Review ---")
+session.execute("""
+CREATE KEYSPACE IF NOT EXISTS Amazon
+WITH REPLICATION = {
+    'class':'SimpleStrategy',
+    'replication_factor':1
+};
+""")
 
-    review = {
-        "review_id": input("Enter Review ID: "),
-        "product_id": input("Enter Product ID: "),
-        "reviewer_id": input("Enter Reviewer ID: "),
-        "stars": input("Enter Stars (1-5): "),
-        "review_body": input("Enter Review Body: "),
-        "review_title": input("Enter Review Title: "),
-        "language": input("Enter Language: "),
-        "product_category": input("Enter Product Category: ")
-    }
+session.set_keyspace("amazon")
 
-    result = collection.insert_one(review)
+# --------------------------------------------------
+# Create Reviews Table
+# --------------------------------------------------
 
-    print("\nReview Added Successfully")
-    print("MongoDB ID:", result.inserted_id)
+session.execute("""
+CREATE TABLE IF NOT EXISTS Reviews (
+    review_id text PRIMARY KEY,
+    product_id text,
+    reviewer_id text,
+    stars int,
+    review_body text,
+    review_title text,
+    product_category text
+);
+""")
 
+# --------------------------------------------------
+# Create ProductCategories Table
+# --------------------------------------------------
 
-# ==========================================================
-# Retrieve one document using find_one()
-# ==========================================================
-def find_one_review():
+session.execute("""
+CREATE TABLE IF NOT EXISTS ProductCategories (
+    product_id text PRIMARY KEY,
+    stars int,
+    language text,
+    product_category text
+);
+""")
 
-    print("\n--- Find One Review ---")
+# --------------------------------------------------
+# Import JSON Dataset
+# --------------------------------------------------
 
-    review = collection.find_one()
+def import_data():
 
-    if review:
-
-        print("\nDocument Found")
-
-        for key, value in review.items():
-            print(f"{key}: {value}")
-
-    else:
-        print("No documents found")
-
-
-# ==========================================================
-# Find reviews greater than or equal to chosen stars
-# ==========================================================
-def find_reviews_greater_equal():
-
-    print("\n--- Reviews Greater Than Or Equal To Stars ---")
-
-    stars = input("Enter minimum stars: ")
-
-    results = collection.find(
-        {"stars": {"$gte": stars}}
+    result = session.execute(
+        "SELECT COUNT(*) FROM Reviews;"
     )
 
-    count = 0
+    existing = list(result)[0][0]
 
-    for review in results:
-
-        print("\nReview ID:", review.get("review_id"))
-        print("Stars:", review.get("stars"))
-        print("Title:", review.get("review_title"))
-
-        count += 1
-
-    print("\nDocuments Found:", count)
-
-
-# ==========================================================
-# Find reviews less than chosen stars
-# ==========================================================
-def find_reviews_less_than():
-
-    print("\n--- Reviews Less Than Stars ---")
-
-    stars = input("Enter maximum stars: ")
-
-    results = collection.find(
-        {"stars": {"$lt": stars}}
-    )
-
-    count = 0
-
-    for review in results:
-
-        print("\nReview ID:", review.get("review_id"))
-        print("Stars:", review.get("stars"))
-        print("Title:", review.get("review_title"))
-
-        count += 1
-
-    print("\nDocuments Found:", count)
-
-
-# ==========================================================
-# Search review titles
-# ==========================================================
-def search_review_title():
-
-    print("\n--- Search Review Title ---")
-
-    word = input("Enter word to search for: ")
-
-    results = collection.find(
-        {"review_title": {"$regex": word, "$options": "i"}}
-    )
-
-    count = 0
-
-    for review in results:
-
-        print("\nReview ID:", review.get("review_id"))
-        print("Title:", review.get("review_title"))
-
-        count += 1
-
-    print("\nDocuments Found:", count)
-
-
-# ==========================================================
-# Search review body
-# ==========================================================
-def search_review_body():
-
-    print("\n--- Search Review Body ---")
-
-    word = input("Enter word to search for: ")
-
-    results = collection.find(
-        {"review_body": {"$regex": word, "$options": "i"}}
-    )
-
-    count = 0
-
-    for review in results:
-
-        print("\nReview ID:", review.get("review_id"))
-        print("Review Body:", review.get("review_body"))
-
-        count += 1
-
-    print("\nDocuments Found:", count)
-
-
-# ==========================================================
-# Update a document
-# ==========================================================
-def update_review():
-
-    print("\n--- Update Review ---")
-
-    review_id = input("Enter review_id to update: ")
-
-    document = collection.find_one(
-        {"review_id": review_id}
-    )
-
-    if document is None:
-        print("Review not found")
+    if existing > 0:
+        print("\nDataset already loaded.\n")
         return
 
-    print("\nAvailable Fields")
-    print("review_id")
-    print("product_id")
-    print("reviewer_id")
-    print("stars")
-    print("review_body")
-    print("review_title")
-    print("language")
-    print("product_category")
+    filename = "dataset_en_dev.json"
 
-    field = input("\nEnter field to update: ")
-    value = input("Enter new value: ")
+    if not os.path.exists(filename):
+        print("\nJSON file not found.\n")
+        return
 
-    collection.update_one(
-        {"review_id": review_id},
-        {"$set": {field: value}}
+    print("\nImporting dataset...\n")
+
+    count = 0
+
+    with open(filename, "r", encoding="utf-8") as file:
+
+        for line in file:
+
+            try:
+
+                review = json.loads(line)
+
+                review_id = review.get("review_id", "")
+                product_id = review.get("product_id", "")
+                reviewer_id = review.get("reviewer_id", "")
+
+                try:
+                    stars = int(review.get("stars", 0))
+                except:
+                    stars = 0
+
+                review_body = review.get("review_body", "")
+                review_title = review.get("review_title", "")
+                language = review.get("language", "")
+                product_category = review.get(
+                    "product_category",
+                    ""
+                )
+
+                session.execute(
+                    """
+                    INSERT INTO Reviews
+                    (
+                        review_id,
+                        product_id,
+                        reviewer_id,
+                        stars,
+                        review_body,
+                        review_title,
+                        product_category
+                    )
+                    VALUES
+                    (%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        review_id,
+                        product_id,
+                        reviewer_id,
+                        stars,
+                        review_body,
+                        review_title,
+                        product_category
+                    )
+                )
+
+                session.execute(
+                    """
+                    INSERT INTO ProductCategories
+                    (
+                        product_id,
+                        stars,
+                        language,
+                        product_category
+                    )
+                    VALUES
+                    (%s,%s,%s,%s)
+                    """,
+                    (
+                        product_id,
+                        stars,
+                        language,
+                        product_category
+                    )
+                )
+
+                count += 1
+
+            except Exception:
+                pass
+
+    print(f"{count} records imported.\n")
+
+
+# --------------------------------------------------
+# Display Categories
+# --------------------------------------------------
+
+def display_categories():
+
+    print()
+
+    rows = session.execute(
+        """
+        SELECT product_category
+        FROM ProductCategories;
+        """
     )
 
-    print("Review Updated Successfully")
-
-
-# ==========================================================
-# Delete one review
-# ==========================================================
-def delete_review():
-
-    print("\n--- Delete Review ---")
-
-    review_id = input("Enter review_id to delete: ")
-
-    result = collection.delete_one(
-        {"review_id": review_id}
+    categories = sorted(
+        set(
+            row.product_category
+            for row in rows
+            if row.product_category
+        )
     )
 
-    if result.deleted_count > 0:
-        print("Review Deleted")
-    else:
-        print("Review Not Found")
+    for category in categories:
+        print(category)
+
+    print()
 
 
-# ==========================================================
-# Delete all reviews
-# ==========================================================
-def delete_all_reviews():
+# --------------------------------------------------
+# High Rating Count
+# --------------------------------------------------
 
-    print("\n--- Delete All Reviews ---")
+def high_review_count():
+
+    category = input(
+        "\nWhich category would you like to "
+        "check the high review count of?\n\n"
+    )
+
+    rows = session.execute(
+        """
+        SELECT stars, product_category
+        FROM ProductCategories
+        """
+    )
+
+    count = 0
+
+    for row in rows:
+
+        if (
+            row.product_category == category
+            and row.stars >= 4
+        ):
+            count += 1
+
+    print()
+    print(
+        f"Number of 4 and 5 star reviews "
+        f"in the {category} category: {count}"
+    )
+    print()
+
+
+# --------------------------------------------------
+# Low Rating Count
+# --------------------------------------------------
+
+def low_review_count():
+
+    category = input(
+        "\nWhich category would you like to "
+        "check the low review count of?\n\n"
+    )
+
+    rows = session.execute(
+        """
+        SELECT stars, product_category
+        FROM ProductCategories
+        """
+    )
+
+    count = 0
+
+    for row in rows:
+
+        if (
+            row.product_category == category
+            and row.stars == 1
+        ):
+            count += 1
+
+    print()
+    print(
+        f"Number of 1 star reviews "
+        f"in the {category} category: {count}"
+    )
+    print()
+
+
+# --------------------------------------------------
+# Execute SELECT Query
+# --------------------------------------------------
+
+def user_query():
+
+    query = input(
+        "\nEnter a SELECT statement:\n\n"
+    )
+
+    if not query.lower().startswith("select"):
+        print(
+            "\nOnly SELECT statements "
+            "are allowed.\n"
+        )
+        return
+
+    try:
+
+        rows = session.execute(query)
+
+        print()
+
+        for row in rows:
+            print(row)
+
+        print()
+
+    except Exception as error:
+        print("\nError:", error, "\n")
+
+
+# --------------------------------------------------
+# Add / Remove Columns
+# --------------------------------------------------
+
+def alter_columns():
+
+    print("\n1. Add Column")
+    print("2. Remove Column\n")
+
+    choice = input("Choice: ")
+
+    table = input(
+        "Table name (Reviews/ProductCategories): "
+    )
+
+    column = input("Column name: ")
+
+    try:
+
+        if choice == "1":
+
+            session.execute(
+                f"""
+                ALTER TABLE {table}
+                ADD {column} text
+                """
+            )
+
+            print("\nColumn added.\n")
+
+        elif choice == "2":
+
+            session.execute(
+                f"""
+                ALTER TABLE {table}
+                DROP {column}
+                """
+            )
+
+            print("\nColumn removed.\n")
+
+    except Exception as error:
+        print("\nError:", error, "\n")
+
+
+# --------------------------------------------------
+# Delete Tables
+# --------------------------------------------------
+
+def delete_tables():
 
     confirm = input(
-        "Type YES to delete all reviews: "
+        "\nDelete Reviews and "
+        "ProductCategories tables? (y/n): "
     )
 
-    if confirm.upper() == "YES":
+    if confirm.lower() == "y":
 
-        result = collection.delete_many({})
-
-        print(
-            f"{result.deleted_count} documents deleted"
+        session.execute(
+            "DROP TABLE IF EXISTS Reviews;"
         )
 
-    else:
-        print("Operation Cancelled")
+        session.execute(
+            """
+            DROP TABLE IF EXISTS
+            ProductCategories;
+            """
+        )
+
+        print("\nTables deleted.\n")
 
 
-# ==========================================================
-# Delete collection
-# ==========================================================
-def delete_collection():
+# --------------------------------------------------
+# Delete Keyspace
+# --------------------------------------------------
 
-    print("\n--- Delete Collection ---")
+def delete_keyspace():
 
     confirm = input(
-        "Type DELETE to delete ReviewData collection: "
+        "\nDelete Amazon keyspace? (y/n): "
     )
 
-    if confirm.upper() == "DELETE":
+    if confirm.lower() == "y":
 
-        collection.drop()
+        session.execute(
+            "DROP KEYSPACE IF EXISTS Amazon;"
+        )
 
-        print("ReviewData collection deleted")
-
-    else:
-        print("Operation Cancelled")
-
-
-# ==========================================================
-# Display Menu
-# ==========================================================
-def display_menu():
-
-    print("\n")
-    print("=" * 50)
-    print("AMAZON REVIEW DATABASE")
-    print("=" * 50)
-    print("1. Create Review")
-    print("2. Find One Review")
-    print("3. Find Reviews >= Stars")
-    print("4. Find Reviews < Stars")
-    print("5. Search Review Title")
-    print("6. Search Review Body")
-    print("7. Update Review")
-    print("8. Delete Review")
-    print("9. Delete All Reviews")
-    print("10. Delete Collection")
-    print("11. Exit")
-    print("=" * 50)
+        print("\nKeyspace deleted.\n")
 
 
-# ==========================================================
-# Main Program Loop
-# ==========================================================
+# --------------------------------------------------
+# Load Dataset
+# --------------------------------------------------
+
+import_data()
+
+# --------------------------------------------------
+# Menu Loop
+# --------------------------------------------------
+
 while True:
 
-    display_menu()
+    print()
+    print(
+        "Type in a number and press enter "
+        "to execute the menu option."
+    )
+    print()
 
-    choice = input("Enter Choice: ")
+    print("1. Display product category list")
+    print("2. Display high (4+) star review count")
+    print("3. Display low (1) star review count")
+    print("4. Enter a query")
+    print("5. Add/Remove table columns")
+    print("6. Delete tables")
+    print("7. Delete keyspace")
+    print("8. Exit the program")
+    print()
+
+    choice = input()
 
     if choice == "1":
-        create_review()
+        display_categories()
 
     elif choice == "2":
-        find_one_review()
+        high_review_count()
 
     elif choice == "3":
-        find_reviews_greater_equal()
+        low_review_count()
 
     elif choice == "4":
-        find_reviews_less_than()
+        user_query()
 
     elif choice == "5":
-        search_review_title()
+        alter_columns()
 
     elif choice == "6":
-        search_review_body()
+        delete_tables()
 
     elif choice == "7":
-        update_review()
+        delete_keyspace()
 
     elif choice == "8":
-        delete_review()
 
-    elif choice == "9":
-        delete_all_reviews()
+        print("\nGoodbye.\n")
 
-    elif choice == "10":
-        delete_collection()
+        session.shutdown()
+        cluster.shutdown()
 
-    elif choice == "11":
-        print("Program Ended")
         break
 
     else:
-        print("Invalid Choice")
-
-client.close()
+        print("\nInvalid selection.\n")
